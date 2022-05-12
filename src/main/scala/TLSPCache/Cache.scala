@@ -18,13 +18,27 @@ class Bank(name: String)(implicit val params: Params[Data]) {
 
 object MSHRState extends ChiselEnum {
   val Empty = Value
-  val Request = Value
-  val Response = Value
+  val ReleaseReq = Value
+  val ReleaseResp = Value
+  val AcquireReq = Value
+  val AcquireResp = Value
+  val AcquireGrant = Value
 }
 
-class MSHR[Bypass <: Data](implicit val params: Params[Bypass]) extends Bundle {
-  val state = MSHRState
-  val req = new MainRequest
+class MSHR[Bypass <: Data](implicit val params: Params[Bypass]) extends Module {
+  val alloc = IO(Flipped(Decoupled(new MSHRAllocRequest[Bypass])))
+
+  val state = MSHRState()
+  val req = new MSHRAllocRequest[Bypass]
+
+  def empty = state === MSHRState.Empty
+
+  // Allocation
+  alloc.ready := empty
+  when(alloc.fire) {
+    req := alloc.bits
+    state := Mux(alloc.bits.hasRelease, MSHRState.ReleaseReq, MSHRState.AcquireReq)
+  }
 }
 
 object ArbiteredRequestType extends ChiselEnum {
@@ -55,6 +69,15 @@ class MSHRAllocRequest[Bypass <: Data](implicit val params: Params[Bypass]) exte
   def hasAcquireData = acquireCap =/= GrowParam.BtoT
 }
 
+class DataAccessRequest(implicit val params: Params[Data]) extends Bundle {
+  val idx = UInt(params.idxWidth.W)
+  val offset = UInt(params.offsetWidth.W)
+  val assoc = UInt(log2Up(params.assocCnt).W)
+
+  val we = Vec(params.writePerAccess, Bool())
+  val wdata = UInt(params.accessSize.W)
+}
+
 class Cache[Bypass <: Data](implicit val params: Params[Bypass]) extends Module {
   /**
     * Ports
@@ -64,13 +87,15 @@ class Cache[Bypass <: Data](implicit val params: Params[Bypass]) extends Module 
 
   val resp = IO(Valid(new Response[Bypass]))
 
+  val out = IO(new tilelink.TLDecoupledBundle(params.tlParam))
+
   /**
    * Storages
    */
   val banks = for(i <- 0 until params.bankCnt) yield new Bank(s"Bank $i")
   val mshrs = for(i <- 0 until params.missesUnderHit) yield (new MSHR).suggestName(s"MSHR $i")
 
-  val mshr_alloc = Decoupled(new MSHRAllocRequest[Bypass])
+  val mshr_allocs = for(i <- 0 until params.bankCnt) yield Decoupled(new MSHRAllocRequest[Bypass])
 
   /**
     * Helpers
@@ -166,14 +191,32 @@ class Cache[Bypass <: Data](implicit val params: Params[Bypass]) extends Module 
   // TODO: check if is request from client
   resp.valid := s2_hit
 
-  mshr_alloc.bits.req := s2_main
-  mshr_alloc.bits.hasRelease := s2_full
-  mshr_alloc.bits.releaseCap := Mux(s2_victim_dirty, PruneReportParam.TtoN, PruneReportParam.BtoN)
-  mshr_alloc.bits.releaseTag := s2_victim_tag
-  mshr_alloc.bits.hasAcquire := true.B // TODO: Implements non-client requests!
-  mshr_alloc.bits.acquireCap := Mux(s2_has_write, GrowParam.NtoT, GrowParam.NtoB) // TODO: implements write with non-sufficient permission
+  mshr_allocs(0).bits.req := s2_main
+  mshr_allocs(0).bits.hasRelease := s2_full
+  mshr_allocs(0).bits.releaseCap := Mux(s2_victim_dirty, PruneReportParam.TtoN, PruneReportParam.BtoN)
+  mshr_allocs(0).bits.releaseTag := s2_victim_tag
+  mshr_allocs(0).bits.hasAcquire := true.B // TODO: Implements non-client requests!
+  mshr_allocs(0).bits.acquireCap := Mux(s2_has_write, GrowParam.NtoT, GrowParam.NtoB) // TODO: implements write with non-sufficient permission
   
-  mshr_alloc.valid := !s2_hit
+  mshr_allocs(0).valid := !s2_hit
 
-  s2_flow := s2_hit || mshr_alloc.ready
+  s2_flow := s2_hit || mshr_allocs(0).ready
+
+  /**
+    * MSHR managements
+    */
+  val mshr_alloc_arb = Module(new RRArbiter(new MSHRAllocRequest[Bypass], params.bankCnt))
+  mshr_alloc_arb.io.in.zip(mshr_allocs).foreach({ case (l, r) => l <> r })
+  var mshr_alloced = false.B
+  for(mshr <- mshrs) {
+    mshr.alloc.bits := mshr_alloc_arb.io.out.bits
+    mshr.alloc.valid := mshr_alloc_arb.io.out.valid && !mshr_alloced
+    mshr_alloced = mshr_alloced || !mshr.alloc.ready
+  }
+
+  mshr_alloc_arb.io.out.ready := mshr_alloced
+  
+  /**
+    * MSHR <-> TL
+    */
 }
