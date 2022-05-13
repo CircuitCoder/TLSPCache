@@ -1,3 +1,6 @@
 [submodule "deps/TileLink"]
 	path = deps/TileLink
-	url = https://github.com/CircuitCoder/TileLink
+	url = git@github.com:CircuitCoder/TileLink.git
+[submodule "deps/TLModels"]
+	path = deps/TLModels
+	url = git@github.com:CircuitCoder/TLModels.git

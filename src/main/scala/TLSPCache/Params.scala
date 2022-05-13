@@ -12,7 +12,7 @@ trait Params[+Bypass <: Data] {
   val addrWidth: Int = 64
 
   val accessSize: Int
-  val writeGranularity: Int = 8
+  val writeGranularity: Int = 1
 
   val lineSize: Int = 64
   val assocSize: Int = 4096

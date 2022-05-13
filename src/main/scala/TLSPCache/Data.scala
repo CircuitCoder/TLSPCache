@@ -18,6 +18,9 @@ class PreflightRequest[Bypass <: Data](implicit val params: Params[Bypass]) exte
   val vaddr = UInt(params.addrWidth.W)
 }
 
+/**
+  * Reqeust following on cycle 1
+  */
 class MainRequest(implicit val params: Params[Data]) extends Bundle {
   val paddr = UInt(params.addrWidth.W)
   val we = Vec(params.writePerAccess, Bool())

@@ -27,9 +27,11 @@ object MSHRState extends ChiselEnum {
 
 class MSHR[Bypass <: Data](implicit val params: Params[Bypass]) extends Module {
   val alloc = IO(Flipped(Decoupled(new MSHRAllocRequest[Bypass])))
+  val data = IO(Decoupled(new DataAccessRequest))
+  val out = IO(new TLDecoupledBundle(params.tlParam))
 
-  val state = MSHRState()
-  val req = new MSHRAllocRequest[Bypass]
+  val state = RegInit(MSHRState.Empty)
+  val req = Reg(new MSHRAllocRequest[Bypass])
 
   def empty = state === MSHRState.Empty
 
@@ -93,9 +95,15 @@ class Cache[Bypass <: Data](implicit val params: Params[Bypass]) extends Module 
    * Storages
    */
   val banks = for(i <- 0 until params.bankCnt) yield new Bank(s"Bank $i")
-  val mshrs = for(i <- 0 until params.missesUnderHit) yield (new MSHR).suggestName(s"MSHR $i")
+  val mshrs = for(i <- 0 until params.missesUnderHit) yield Module(new MSHR).suggestName(s"MSHR $i")
 
-  val mshr_allocs = for(i <- 0 until params.bankCnt) yield Decoupled(new MSHRAllocRequest[Bypass])
+  val bank_data_reqs = for(i <- 0 until params.bankCnt) yield new {
+    val pipeline = Wire(Decoupled(new DataAccessRequest))
+    val mshr = Wire(Decoupled(new DataAccessRequest))
+  }
+  val bank_data_resp = for(i <- 0 until params.bankCnt) yield Wire(UInt((params.accessSize * 8).W))
+
+  val mshr_allocs = for(i <- 0 until params.bankCnt) yield Wire(Decoupled(new MSHRAllocRequest[Bypass]))
 
   /**
     * Helpers
@@ -191,6 +199,7 @@ class Cache[Bypass <: Data](implicit val params: Params[Bypass]) extends Module 
   // TODO: check if is request from client
   resp.valid := s2_hit
 
+  // TODO: push to replay queue if misses but has MSHR with same idx
   mshr_allocs(0).bits.req := s2_main
   mshr_allocs(0).bits.hasRelease := s2_full
   mshr_allocs(0).bits.releaseCap := Mux(s2_victim_dirty, PruneReportParam.TtoN, PruneReportParam.BtoN)
